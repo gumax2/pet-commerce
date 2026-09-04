@@ -7,51 +7,840 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Product {
-  id            String      @id @default(cuid())
-  sku           String      @unique
-  name          String
-  description   String?
-  supplier      String?
-  cost          Decimal     @db.Decimal(10, 2)
-  price         Decimal     @db.Decimal(10, 2)
-  active        Boolean     @default(true)
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
-  orderItems    OrderItem[]
+// -------------------- USERS / AUTH --------------------
+model User {
+  id                 String              @id @default(cuid())
+  email              String              @unique
+  phone              String?             @unique
+  passwordHash       String?
+  status             UserStatus          @default(ACTIVE)
+  kycLevel           Int                 @default(0)
+  trustScore         Int                 @default(100)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  lastLoginAt        DateTime?
+  steamAccounts      SteamAccount[]
+  kycProfile         KycProfile?
+  wallet             Wallet?
+  orders             Order[]
+  payments           Payment[]
+  riskEvents         RiskEvent[]
+  trustHistory       TrustScoreHistory[]
+  restrictions       UserRestriction[]
+  supportTickets     SupportTicket[]
+  auditLogs          AuditLog[]
+  buyQuotes          BuyQuote[]
 }
 
-model Order {
+model SteamAccount {
+  id               String   @id @default(cuid())
+  userId           String
+  steamId          String   @unique
+  personaName      String?
+  tradeUrl         String?
+  avatarUrl        String?
+  profileUrl       String?
+  steamGuardStatus Boolean  @default(false)
+  verifiedAt       DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bots             SteamBot[]
+  sentTrades       Trade[]  @relation("SenderSteam")
+  receivedTrades   Trade[]  @relation("ReceiverSteam")
+
+  @@index([userId])
+}
+
+// -------------------- KYC --------------------
+model KycProfile {
+  id                 String       @id @default(cuid())
+  userId             String       @unique
+  level              Int          @default(0)
+  status             KycStatus    @default(NOT_STARTED)
+  provider           String?
+  providerReference  String?
+  verifiedAt         DateTime?
+  rejectedAt         DateTime?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+  user               User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  documents          KycDocument[]
+}
+
+model KycDocument {
+  id                String            @id @default(cuid())
+  kycProfileId      String
+  documentType      KycDocumentType
+  storageReference  String
+  status            KycDocumentStatus @default(PENDING)
+  providerReference String?
+  uploadedAt        DateTime          @default(now())
+  verifiedAt        DateTime?
+  expiresAt         DateTime?
+  kycProfile        KycProfile        @relation(fields: [kycProfileId], references: [id], onDelete: Cascade)
+
+  @@index([kycProfileId, status])
+}
+
+// -------------------- WALLET / LEDGER --------------------
+model Wallet {
+  id               String              @id @default(cuid())
+  userId           String              @unique
+  currency         String              @default("BRL")
+  availableBalance Decimal             @default(0) @db.Decimal(20, 8)
+  heldBalance      Decimal             @default(0) @db.Decimal(20, 8)
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  user             User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions     WalletTransaction[]
+}
+
+model WalletTransaction {
+  id               String                @id @default(cuid())
+  walletId         String
+  type             WalletTransactionType
+  amount           Decimal               @db.Decimal(20, 8)
+  status           LedgerStatus          @default(COMPLETED)
+  referenceType    String?
+  referenceId      String?
+  idempotencyKey   String                @unique
+  description      String?
+  createdAt        DateTime              @default(now())
+  completedAt      DateTime?
+  wallet           Wallet                @relation(fields: [walletId], references: [id], onDelete: Restrict)
+
+  @@index([walletId, createdAt])
+  @@index([referenceType, referenceId])
+}
+
+// -------------------- SKIN CATALOG / INVENTORY --------------------
+model SkinCatalog {
+  id                 String               @id @default(cuid())
+  marketHashName     String               @unique
+  weapon             String?
+  skinName           String?
+  rarity             String?
+  active             Boolean              @default(true)
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  items              SkinItem[]
+  marketPrices       MarketPrice[]
+  priceHistory       MarketPriceHistory[]
+  buyQuotes          BuyQuote[]
+  orderItems         OrderItem[]
+}
+
+model SkinItem {
+  id                 String          @id @default(cuid())
+  catalogId          String
+  assetId            String          @unique
+  classId            String?
+  instanceId         String?
+  floatValue         Decimal?        @db.Decimal(10, 8)
+  paintSeed          Int?
+  pattern            String?
+  stattrak           Boolean         @default(false)
+  souvenir           Boolean         @default(false)
+  steamId            String?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  catalog            SkinCatalog     @relation(fields: [catalogId], references: [id], onDelete: Restrict)
+  inventoryItem      InventoryItem?
+  orderItems         OrderItem[]
+  upgradeItems       UpgradeItem[]
+  downgradeItems     DowngradeItem[]
+
+  @@index([catalogId])
+}
+
+model SteamBot {
+  id                  String       @id @default(cuid())
+  steamId             String       @unique
+  name                String
+  status              BotStatus    @default(ACTIVE)
+  purpose             BotPurpose   @default(FULFILLMENT)
+  maxInventoryValue   Decimal?     @db.Decimal(20, 8)
+  currentInventoryValue Decimal?   @db.Decimal(20, 8)
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+  accountId           String?
+  account             SteamAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  inventoryItems      InventoryItem[]
+  trades              Trade[]
+}
+
+model InventoryItem {
+  id                 String               @id @default(cuid())
+  skinItemId         String               @unique
+  botId              String?
+  ownershipStatus    OwnershipStatus     @default(GUMAX)
+  availabilityStatus InventoryStatus     @default(AVAILABLE)
+  acquisitionCost    Decimal?             @db.Decimal(20, 8)
+  acquisitionCurrency String?             @default("BRL")
+  acquiredAt         DateTime?
+  availableAt        DateTime?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  skinItem           SkinItem             @relation(fields: [skinItemId], references: [id], onDelete: Restrict)
+  bot                SteamBot?            @relation(fields: [botId], references: [id], onDelete: SetNull)
+  pricingRule        InventoryPricingRule?
+  upgradeItems       UpgradeItem[]
+  downgradeItems     DowngradeItem[]
+
+  @@index([botId, availabilityStatus])
+  @@index([availabilityStatus])
+}
+
+model InventoryPricingRule {
+  id                    String        @id @default(cuid())
+  inventoryItemId       String        @unique
+  acquisitionCost       Decimal       @db.Decimal(20, 8)
+  minimumMarginPercent  Decimal       @db.Decimal(8, 4)
+  minimumSalePrice      Decimal       @db.Decimal(20, 8)
+  overrideAllowed       Boolean       @default(false)
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+  inventoryItem         InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+}
+
+// -------------------- MARKET DATA / PRICING --------------------
+model MarketPrice {
   id             String      @id @default(cuid())
-  email          String?
-  customerName   String?
-  phone          String?
-  status         OrderStatus @default(PENDING)
-  subtotal       Decimal     @db.Decimal(10, 2)
-  shipping       Decimal     @db.Decimal(10, 2) @default(0)
-  paymentFee     Decimal     @db.Decimal(10, 2) @default(0)
-  total          Decimal     @db.Decimal(10, 2)
-  externalId     String?
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
+  catalogId      String
+  market         MarketSource
+  currency       String
+  sourcePrice    Decimal     @db.Decimal(20, 8)
+  fxRate         Decimal?    @db.Decimal(20, 8)
+  priceBrl       Decimal     @db.Decimal(20, 8)
+  capturedAt     DateTime    @default(now())
+  catalog        SkinCatalog @relation(fields: [catalogId], references: [id], onDelete: Cascade)
+
+  @@index([catalogId, market, capturedAt])
+}
+
+model MarketPriceHistory {
+  id             String      @id @default(cuid())
+  catalogId      String
+  market         MarketSource
+  price          Decimal     @db.Decimal(20, 8)
+  currency       String
+  liquidityScore Decimal?    @db.Decimal(8, 4)
+  volume         Decimal?    @db.Decimal(20, 8)
+  capturedAt     DateTime    @default(now())
+  catalog        SkinCatalog @relation(fields: [catalogId], references: [id], onDelete: Cascade)
+
+  @@index([catalogId, market, capturedAt])
+}
+
+model FxRate {
+  id             String   @id @default(cuid())
+  baseCurrency   String
+  quoteCurrency  String
+  rate           Decimal  @db.Decimal(20, 10)
+  source         String
+  capturedAt     DateTime @default(now())
+
+  @@index([baseCurrency, quoteCurrency, capturedAt])
+}
+
+model PricingRule {
+  id                 String   @id @default(cuid())
+  type               PricingRuleType
+  value              Decimal? @db.Decimal(20, 8)
+  percentage         Decimal? @db.Decimal(8, 4)
+  minValue           Decimal? @db.Decimal(20, 8)
+  maxValue           Decimal? @db.Decimal(20, 8)
+  active             Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model BuyQuote {
+  id                 String      @id @default(cuid())
+  userId             String
+  catalogId          String
+  marketPrice        Decimal     @db.Decimal(20, 8)
+  liquidityScore     Decimal?    @db.Decimal(8, 4)
+  riskScore          Int         @default(0)
+  buyPercentage      Decimal     @db.Decimal(8, 4)
+  offerPrice         Decimal     @db.Decimal(20, 8)
+  status             QuoteStatus @default(PENDING)
+  expiresAt          DateTime?
+  createdAt          DateTime    @default(now())
+  user               User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  catalog            SkinCatalog @relation(fields: [catalogId], references: [id], onDelete: Restrict)
+
+  @@index([userId, status])
+  @@index([catalogId, createdAt])
+}
+
+// -------------------- ORDERS / PAYMENTS --------------------
+model Order {
+  id             String       @id @default(cuid())
+  userId         String
+  type           OrderType
+  status         OrderStatus  @default(CREATED)
+  subtotal       Decimal      @db.Decimal(20, 8)
+  fees           Decimal      @default(0) @db.Decimal(20, 8)
+  discount       Decimal      @default(0) @db.Decimal(20, 8)
+  total          Decimal      @db.Decimal(20, 8)
+  currency       String       @default("BRL")
+  paymentStatus  PaymentStatus @default(PENDING)
+  riskStatus     RiskStatus   @default(PENDING)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  completedAt    DateTime?
+  user           User         @relation(fields: [userId], references: [id], onDelete: Restrict)
   items          OrderItem[]
+  payments       Payment[]
+  supplierOrders SupplierOrder[]
+  trades         Trade[]
+  upgrade        Upgrade?
+  downgrade      Downgrade?
+  supportTickets SupportTicket[]
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
 }
 
 model OrderItem {
-  id          String  @id @default(cuid())
-  orderId     String
-  productId   String
-  quantity    Int
-  unitPrice   Decimal @db.Decimal(10, 2)
-  order       Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product     Product @relation(fields: [productId], references: [id])
+  id                String         @id @default(cuid())
+  orderId           String
+  catalogId         String
+  skinItemId        String?
+  quantity          Int            @default(1)
+  unitPrice         Decimal        @db.Decimal(20, 8)
+  source            String?
+  fulfillmentType   FulfillmentType
+  order             Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  catalog           SkinCatalog    @relation(fields: [catalogId], references: [id], onDelete: Restrict)
+  skinItem          SkinItem?      @relation(fields: [skinItemId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([catalogId])
+}
+
+model Payment {
+  id                    String        @id @default(cuid())
+  orderId               String
+  userId                String
+  provider              String
+  providerTransactionId String?       @unique
+  amount                Decimal       @db.Decimal(20, 8)
+  currency              String        @default("BRL")
+  status                PaymentStatus @default(PENDING)
+  riskStatus            RiskStatus    @default(PENDING)
+  confirmedAt           DateTime?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+  order                 Order         @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  user                  User          @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([orderId, status])
+  @@index([userId, createdAt])
+}
+
+model SupplierOrder {
+  id                String              @id @default(cuid())
+  orderId           String
+  supplier          String              @default("YOUPIN")
+  externalOrderId   String?
+  currency          String              @default("CNY")
+  sourcePrice       Decimal             @db.Decimal(20, 8)
+  fxRate            Decimal             @db.Decimal(20, 10)
+  markupPercentage  Decimal             @db.Decimal(8, 4)
+  finalPriceBrl     Decimal             @db.Decimal(20, 8)
+  status            SupplierOrderStatus @default(PENDING)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  order             Order               @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([orderId, status])
+  @@index([supplier, externalOrderId])
+}
+
+// -------------------- TRADES / PROTECTION --------------------
+model Trade {
+  id                 String             @id @default(cuid())
+  orderId            String
+  botId              String?
+  senderSteamId      String?
+  receiverSteamId    String?
+  steamTradeId       String?            @unique
+  status             TradeStatus        @default(CREATED)
+  value              Decimal            @db.Decimal(20, 8)
+  createdAt          DateTime           @default(now())
+  acceptedAt         DateTime?
+  confirmedAt        DateTime?
+  reversedAt         DateTime?
+  order              Order              @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  bot                SteamBot?          @relation(fields: [botId], references: [id], onDelete: SetNull)
+  sender             SteamAccount?      @relation("SenderSteam", fields: [senderSteamId], references: [steamId], onDelete: SetNull)
+  receiver           SteamAccount?      @relation("ReceiverSteam", fields: [receiverSteamId], references: [steamId], onDelete: SetNull)
+  protection         TradeProtection?
+  quarantineItems    AssetQuarantine[]
+
+  @@index([orderId, status])
+  @@index([status, createdAt])
+}
+
+model TradeProtection {
+  id                String                @id @default(cuid())
+  tradeId           String                @unique
+  status            TradeProtectionStatus @default(PROTECTED)
+  protectedUntil    DateTime?
+  releasedAt        DateTime?
+  releaseReason     String?
+  reversalDetected  Boolean               @default(false)
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  trade             Trade                 @relation(fields: [tradeId], references: [id], onDelete: Cascade)
+}
+
+model AssetQuarantine {
+  id            String          @id @default(cuid())
+  tradeId       String
+  skinItemId    String
+  reason        String
+  status        QuarantineStatus @default(HELD)
+  startedAt     DateTime        @default(now())
+  releasedAt    DateTime?
+  trade         Trade           @relation(fields: [tradeId], references: [id], onDelete: Restrict)
+
+  @@index([skinItemId, status])
+  @@index([tradeId])
+}
+
+// -------------------- UPGRADE / DOWNGRADE --------------------
+model Upgrade {
+  id           String        @id @default(cuid())
+  orderId      String        @unique
+  userId       String
+  inputValue   Decimal       @db.Decimal(20, 8)
+  outputValue  Decimal       @db.Decimal(20, 8)
+  difference   Decimal       @db.Decimal(20, 8)
+  fee          Decimal       @default(0) @db.Decimal(20, 8)
+  status       OperationStatus @default(PENDING)
+  createdAt    DateTime      @default(now())
+  completedAt  DateTime?
+  order        Order         @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  items        UpgradeItem[]
+
+  @@index([userId, status])
+}
+
+model UpgradeItem {
+  id               String         @id @default(cuid())
+  upgradeId        String
+  skinItemId       String
+  inventoryItemId  String?
+  direction        TradeItemDirection
+  valuation        Decimal        @db.Decimal(20, 8)
+  upgrade          Upgrade        @relation(fields: [upgradeId], references: [id], onDelete: Cascade)
+  skinItem         SkinItem       @relation(fields: [skinItemId], references: [id], onDelete: Restrict)
+  inventoryItem    InventoryItem? @relation(fields: [inventoryItemId], references: [id], onDelete: SetNull)
+
+  @@index([upgradeId, direction])
+}
+
+model Downgrade {
+  id           String          @id @default(cuid())
+  orderId      String          @unique
+  userId       String
+  inputValue   Decimal        @db.Decimal(20, 8)
+  outputValue  Decimal        @db.Decimal(20, 8)
+  difference   Decimal        @db.Decimal(20, 8)
+  fee          Decimal        @default(0) @db.Decimal(20, 8)
+  walletCredit Decimal        @default(0) @db.Decimal(20, 8)
+  status       OperationStatus @default(PENDING)
+  createdAt    DateTime        @default(now())
+  completedAt  DateTime?
+  order        Order           @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  items        DowngradeItem[]
+
+  @@index([userId, status])
+}
+
+model DowngradeItem {
+  id               String         @id @default(cuid())
+  downgradeId      String
+  skinItemId       String
+  inventoryItemId  String?
+  direction        TradeItemDirection
+  valuation        Decimal        @db.Decimal(20, 8)
+  downgrade        Downgrade      @relation(fields: [downgradeId], references: [id], onDelete: Cascade)
+  skinItem         SkinItem       @relation(fields: [skinItemId], references: [id], onDelete: Restrict)
+  inventoryItem    InventoryItem? @relation(fields: [inventoryItemId], references: [id], onDelete: SetNull)
+
+  @@index([downgradeId, direction])
+}
+
+// -------------------- TRUST / RISK / RESTRICTIONS --------------------
+model RiskEvent {
+  id             String      @id @default(cuid())
+  userId         String
+  type           RiskEventType
+  severity       RiskSeverity
+  scoreImpact    Int         @default(0)
+  referenceType  String?
+  referenceId    String?
+  description    String?
+  createdAt      DateTime    @default(now())
+  user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([type, severity])
+}
+
+model TrustScoreHistory {
+  id             String   @id @default(cuid())
+  userId         String
+  previousScore  Int
+  newScore       Int
+  reason         String
+  referenceType  String?
+  referenceId    String?
+  createdAt      DateTime @default(now())
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model UserRestriction {
+  id          String            @id @default(cuid())
+  userId      String
+  type        RestrictionType
+  reason      String
+  severity    RiskSeverity
+  status      RestrictionStatus @default(ACTIVE)
+  expiresAt   DateTime?
+  createdAt   DateTime          @default(now())
+  liftedAt    DateTime?
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+}
+
+// -------------------- SUPPORT / AUDIT --------------------
+model SupportTicket {
+  id                    String          @id @default(cuid())
+  userId                String
+  category              SupportCategory
+  priority              SupportPriority @default(NORMAL)
+  status                SupportStatus   @default(OPEN)
+  relatedOrderId        String?
+  relatedTradeId        String?
+  relatedRestrictionId  String?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+  resolvedAt            DateTime?
+  user                  User            @relation(fields: [userId], references: [id], onDelete: Restrict)
+  order                 Order?          @relation(fields: [relatedOrderId], references: [id], onDelete: SetNull)
+  messages              SupportMessage[]
+
+  @@index([userId, status])
+  @@index([relatedOrderId])
+}
+
+model SupportMessage {
+  id          String   @id @default(cuid())
+  ticketId    String
+  senderType  String
+  senderId    String?
+  message     String
+  createdAt   DateTime @default(now())
+  ticket      SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, createdAt])
+}
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  actorType    String
+  actorId      String?
+  userId       String?
+  action       String
+  entityType   String
+  entityId     String
+  oldData      Json?
+  newData      Json?
+  ipAddress    String?
+  userAgent    String?
+  createdAt    DateTime @default(now())
+  user         User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt])
+  @@index([userId, createdAt])
+}
+
+// -------------------- ENUMS --------------------
+enum UserStatus {
+  ACTIVE
+  RESTRICTED
+  SUSPENDED
+  BANNED
+  PERMANENTLY_BANNED
+}
+
+enum KycStatus {
+  NOT_STARTED
+  PENDING
+  IN_REVIEW
+  VERIFIED
+  REJECTED
+}
+
+enum KycDocumentType {
+  ID_DOCUMENT
+  DRIVERS_LICENSE
+  PASSPORT
+  PROOF_OF_ADDRESS
+  SELFIE
+  LIVENESS
+}
+
+enum KycDocumentStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+  EXPIRED
+}
+
+enum WalletTransactionType {
+  DEPOSIT
+  WITHDRAWAL
+  SKIN_PURCHASE
+  SKIN_SALE
+  UPGRADE
+  DOWNGRADE
+  REFUND
+  FEE
+  BONUS
+  TRADE_HOLD
+  TRADE_RELEASE
+}
+
+enum LedgerStatus {
+  PENDING
+  COMPLETED
+  REVERSED
+  FAILED
+}
+
+enum OwnershipStatus {
+  GUMAX
+  USER
+  RESERVED
+  TRANSFER_PENDING
+}
+
+enum InventoryStatus {
+  AVAILABLE
+  RESERVED
+  QUARANTINE
+  TRADE_PROTECTED
+  FROZEN
+  SOLD
+  TRANSFER_PENDING
+}
+
+enum BotStatus {
+  ACTIVE
+  MAINTENANCE
+  DISABLED
+}
+
+enum BotPurpose {
+  FULFILLMENT
+  BUY
+  ORDER
+  UPGRADE
+  DOWNGRADE
+}
+
+enum MarketSource {
+  YOUPIN
+  BUFF163
+  STEAM
+  OTHER
+}
+
+enum PricingRuleType {
+  ORDER_RMB_MARKUP
+  BUY_LIQUID_PERCENT
+  BUY_ILLIQUID_PERCENT
+  INVENTORY_MIN_MARGIN
+  UPGRADE_FEE
+  DOWNGRADE_FEE
+  FX_MARKUP
+}
+
+enum QuoteStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REJECTED
+  CANCELLED
+}
+
+enum OrderType {
+  FULL
+  ORDER
+  BUY
+  UPGRADE
+  DOWNGRADE
 }
 
 enum OrderStatus {
-  PENDING
-  PAID
+  CREATED
+  PAYMENT_PENDING
+  PAYMENT_CONFIRMED
+  RISK_REVIEW
+  FUNDS_AUTHORIZED
   PROCESSING
+  TRADE_PENDING
+  COMPLETED
+  CANCELLED
+  REFUNDED
+  FAILED
+}
+
+enum PaymentStatus {
+  PENDING
+  CONFIRMED
+  HELD
+  AUTHORIZED
+  DISPUTED
+  REFUNDED
+  CANCELLED
+  FAILED
+}
+
+enum RiskStatus {
+  PENDING
+  LOW
+  MEDIUM
+  HIGH
+  CLEAR
+  BLOCKED
+  DISPUTED
+}
+
+enum FulfillmentType {
+  FULL
+  YOUPIN_ORDER
+  INVENTORY
+  UPGRADE
+  DOWNGRADE
+}
+
+enum SupplierOrderStatus {
+  PENDING
+  AUTHORIZED
+  ORDERED
+  PAID
   SHIPPED
-  DELIVERED
-  CANCELED
+  RECEIVED
+  CANCELLED
+  FAILED
+}
+
+enum TradeStatus {
+  CREATED
+  OFFER_SENT
+  ACCEPTED
+  CONFIRMED
+  PROTECTED
+  RELEASED
+  REVERSED
+  CANCELLED
+  FAILED
+}
+
+enum TradeProtectionStatus {
+  PROTECTED
+  RELEASE_PENDING
+  RELEASED
+  REVERSED
+  FROZEN
+  MANUAL_REVIEW
+}
+
+enum QuarantineStatus {
+  HELD
+  RELEASED
+  FROZEN
+}
+
+enum TradeItemDirection {
+  INPUT
+  OUTPUT
+}
+
+enum OperationStatus {
+  PENDING
+  PROCESSING
+  PROTECTED
+  COMPLETED
+  CANCELLED
+  FAILED
+}
+
+enum RiskEventType {
+  REVERSE_TRADE
+  PAYMENT_DISPUTE
+  SUSPICIOUS_TRADE
+  KYC_FAILURE
+  MULTIPLE_ACCOUNTS
+  UNUSUAL_ACTIVITY
+  FAILED_PAYMENT
+}
+
+enum RiskSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum RestrictionType {
+  RESTRICTION
+  SUSPENSION
+  BAN
+  PERMANENT_BAN
+}
+
+enum RestrictionStatus {
+  ACTIVE
+  LIFTED
+  EXPIRED
+}
+
+enum SupportCategory {
+  PAYMENT
+  TRADE
+  KYC
+  ACCOUNT
+  BAN_APPEAL
+  UPGRADE
+  DOWNGRADE
+  ORDER
+  TECHNICAL
+}
+
+enum SupportPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum SupportStatus {
+  OPEN
+  IN_PROGRESS
+  WAITING_USER
+  RESOLVED
+  CLOSED
 }
